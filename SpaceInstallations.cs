@@ -33,7 +33,6 @@ namespace HostileExploration{
 		public int largeInstallationAttempts = 0;
 		
 		public double playerTravelTrigger = 10000; //Spawn will initiate in player area once player travels this distance along the surface.
-        //public double maxPlayerDistFromSurface = 600000; //Spawning will not occur for player if they are this far from planet surface.
         		
 		//Player Distance Spawning Rules
 		public double minSpawnDistFromPlayer = 4000; //Minimum distance from player to spawn at.
