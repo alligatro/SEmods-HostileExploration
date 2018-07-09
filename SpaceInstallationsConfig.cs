@@ -1,9 +1,10 @@
 using System;
 using Sandbox.ModAPI;
 
-namespace HostileExploration{
-	
-	public class PlanetaryInstallationsConfig{
+namespace HostileExploration
+{
+
+    public class PlanetaryInstallationsConfig{
 		
 		public int SpawnTimerTrigger {get; set;}
 		public int MaximumActiveStationsPerPlanet {get; set;}
