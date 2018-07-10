@@ -1,0 +1,1 @@
+7.7.2018 : RS : CLARITY: added private scope to default scoped items; Moved field comments to summary for visibility using intellisense (Visual Studio tool tips); added regions for ease of readability; 

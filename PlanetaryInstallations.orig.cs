@@ -1,263 +1,184 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using Sandbox.Common;
+using Sandbox.Common.ObjectBuilders;
 using Sandbox.Definitions;
 using Sandbox.Game;
 using Sandbox.Game.Entities;
 using Sandbox.Game.EntityComponents;
+using Sandbox.ModAPI.Ingame;
+using Sandbox.ModAPI.Interfaces;
 using SpaceEngineers.Game.ModAPI;
+using VRage.Game;
 using VRage.Game.Components;
+using VRage.Game.Entity;
 using VRage.Game.ModAPI;
 using VRage.ModAPI;
+using VRage.ObjectBuilders;
 using VRage.Utils;
 using VRageMath;
-using Sandbox.ModAPI;
 
-namespace HostileExploration {
-
-    [MySessionComponentDescriptor(MyUpdateOrder.BeforeSimulation)]
-
-    public class PlanetaryInstallations : MySessionComponentBase {
-
-        //To-Do: Create Removal Exception For Unowned Grids before making a 'wrecks' mod.
-        //To-Do: think about turning all these millions of fields into classes. Maybe these regions are a good indicator on what should be in what class.
-
-        private InstallationWatcher installationWatcher = new InstallationWatcher();
-
-
-
-        private SpawningRules spawningRules = new SpawningRules
-        {
-
-            General = new GeneralSpawningRules
-            {
-
-                SpawnTimerTrigger = 2,
-                MaxActiveInstallationsPerPlanet = 30,
-                MinDistFromOtherGrids = 2500,
-                MediumInstallationChanceBase = 0,
-                MediumInstallationChanceIncrement = 0,
-                MediumInstallationAttempts = 0,
-                LargeInstallationChanceBase = 0,
-                LargeInstallationChanceIncrement = 0,
-                LargeInstallationAttempts = 0,
-                PlayerTravelTrigger = 10000
-            },
-            PlayerDistance = new PlayerDistanceSpawningRules
-            {
-                MinSpawnDistFromPlayer = 4000,
-                MaxSpawnDistFromPlayer = 5000,
-                MediumSpawnDistFromPlayerAdd = 500,
-                LargeSpawnDistFromPlayerAdd = 1000,
-            },
-            ExistingInstallation = new ExistingInstallationSpawningRules
-            {
-                MinSpawnDistFromExisting = 3000
-            },
-            SpawnPointTerrainLevel = new SpawnPointTerrainLevelRules
-            {
-                RandomLocationAttempts = 150,
-
-                MediumLocationAttemptIncrement = 50,
-                LargeLocationAttemptIncrement = 100,
-                MinTerrainLevelVariance = -3.5,
-                MaxTerrainLevelVariance = 2.5,
-                TerrainCheckIncrement = 10,
-                SmallCheckDistance = 30,
-                MediumCheckDistance = 80,
-                LargeCheckDistance = 100
-
-
-            },
-            Territory = new TerritorySpawningRules
-            {
-
-                IgnoreTerritoryRules = false,
-                ReuseTerritories = false
-
-
-            }
-        };
-
-
-
-        #region Installation Spawn Group Lists
-        private List<MySpawnGroupDefinition> explorationSpawnGroups = new List<MySpawnGroupDefinition>();
-        //List<MySpawnGroupDefinition> mediumInstallationSpawnGroups = new List<MySpawnGroupDefinition>();
-        //List<MySpawnGroupDefinition> largeInstallationSpawnGroups = new List<MySpawnGroupDefinition>();
-
-        /// <summary>
-        /// Used by script to determine if there are valid spawn groups where the player is located.
-        /// </summary>
-        private bool foundValidSpawnGroup = false;
-
-        #endregion
-
-        #region Spawning Queue
-        private List<IMyPlayer> installationSpawningQueue = new List<IMyPlayer>();
-        private bool successfulSpawn = false;
-
-        #endregion
-
-        #region Despawn Rules
-
-        /// <summary>
-        /// If installation loses power and isn't owned by player, it will despawn when all players are further than this distance.
-        /// </summary>
-        private double noPowerDespawnDist = 12000; 
-
-        #endregion
-
-        #region Installation Regeneration Rules
-
-        /// <summary>
-        /// Seconds until installation attempts to regenerate blocks.
-        /// </summary>
-        private int installationRegenTimerTrigger = 300;
-
-        /// <summary>
-        /// Minimum blocks that script will try to regenerate.
-        /// </summary>
-        private int installationRegenMinBlocks = 15;
-
-        /// <summary>
-        /// Maximum blocks that script will try to regenerate.
-        /// </summary>
-        private int installationRegenMaxBlocks = 30;
-
-        #endregion
-
-        #region Medium/Large Station Tier Timeouts
-        private int stationSizeAttemptBuff = 0;
-        private int mediumInstallationAttemptTimeout = 0;
-        private int largeInstallationAttemptTimeout = 0;
-
-        #endregion
-
-        #region NPC Faction Values
-
-        private List<IMyFaction> npcFactionList = new List<IMyFaction>(); // List of all Default Factions.
-        private long npcFounder = 0;
-
-        #endregion
-
-        #region Territory Values
-        private List<string> territoryNameList = new List<string>();
-        private List<string> territoryTagList = new List<string>();
-        private List<Vector3D> territoryCoordsList = new List<Vector3D>();
-        private List<double> territoryRadiusList = new List<double>();
-
-        #endregion
-
-        #region Entity Storage
-
-        #region Entity Storage: Planet Territories
-
-        private Guid planetTerritoryStorageKey = new Guid("9A13A7EA-21A6-4E97-8114-6EE4FE52EEB5");
-        private string planetTerritoryStorageValue = "";
-        private List<Vector3D> planetTerritoriesUsed = new List<Vector3D>();
-
-        #endregion
-
-        #region Entity Storage: Planet Next Installation
-        private Guid planetNextInstStorageKey = new Guid("7910F6EE-3B2C-4A99-921D-DAEDA6C26B1A");
-        private string planetNextInstStorageValue = "";
-        private int mediumInstallationChance = 0;
-        private int largeInstallationChance = 0;
-
-        #endregion
-
-        #region Entity Storage: Planet Unique SpawnGroups
-        private Guid planetUniqueSpawnGroupsKey = new Guid("A61421E8-45A3-4F3B-9EB9-88BD94D906C6");
-        private string planetUniqueSpawnGroupsValue = "";
-        private List<string> planetUniqueSpawnGroupsUsed = new List<string>();
-
-        #endregion
-
-        #region Entity Storage: Installation Grid
-        private Guid installationGridStorageKey = new Guid("8F7ECF87-4630-4F62-A490-81C0D4D75E6D");
-
-        /// <summary>
-        /// Possible Status: Active / NoPower / Captured
-        /// </summary>
-        private string installationStatus = ""; 
-        private string installationSizeTier = "";
-        private string installationPlanet = "";
-        private bool installationRegenAllowed = false;
-
-        #endregion
-
-        #endregion
-
-        #region Player Tracker
-
-        /// <summary>
-        /// Used to store player location on the planet to trigger spawning when they've traveled far enough.
-        /// </summary>
-        private Dictionary<long, Vector3D> playerLocationTracker = new Dictionary<long, Vector3D>();
-
-        #endregion
-
-        #region Lists for Players / Entities
-        private List<IMyPlayer> playerList = new List<IMyPlayer>();
-        private HashSet<IMyEntity> entityList = new HashSet<IMyEntity>();
-        private HashSet<MyPlanet> planetList = new HashSet<MyPlanet>();
-        private List<string> planetNameList = new List<string>();
-
-        #endregion
-
-        #region Active Installations
-
-        private List<IMyCubeGrid> activeInstallations = new List<IMyCubeGrid>();
-        private List<IMyCubeGrid> activeWrecks = new List<IMyCubeGrid>();
-
-        #endregion
-
-        #region Grid Regeneration
-        private int gridRegenTimerTrigger = 450;
-        private int gridRegenProcessTimer = 0;
-        private List<IMyCubeGrid> regenQueue = new List<IMyCubeGrid>();
-        private bool regenProcessing = false;
-        private bool gridRegenDebug = false;
-
-        #endregion
-
-        #region Wreck Info
-
-        #region Wreck Direction Template List
-        private List<Vector3D> wreckTemplateUpA = new List<Vector3D>();
-        private List<Vector3D> wreckTemplateForwardA = new List<Vector3D>();
-
-        #endregion
-
-        #region Wreck Temp Directions
-        private Vector3D wreckTempDirUp = new Vector3D(0,0,0);
-        private Vector3D wreckTempDirForward = new Vector3D(0,0,0);
-
-        #endregion
-
-        #endregion
-
-        #region Counters and Timer Triggers
-        private int scriptRun = 0;
-        private int scriptRunTrigger = 60;
-        private int installationMonitorTimer = 0;
-        private int installationMonitorTimerTrigger = 10;
-        private int spawnTimer = 0;
-        private int installationRegenTimer = 0;
-        private int gridRegenTimer = 0;
-
-        #endregion
-
-        #region Misc
-        private Random rnd = new Random();
-        private Vector3D blankPosition = new Vector3D(0,0,0);
-        private bool debugMode = true;
-        private bool scriptInitialized = false;
-        private bool scriptInitFailed = false;
-
-        #endregion
-
-        public override void UpdateBeforeSimulation(){
+namespace MeridiusIX{
+	
+	[MySessionComponentDescriptor(MyUpdateOrder.BeforeSimulation)]
+	
+	public class PlanetaryInstallations : MySessionComponentBase{
+		
+		//To-Do: Create Removal Exception For Unowned Grids before making a 'wrecks' mod.
+		
+		//General Spawning Rules
+		public int spawnTimerTrigger = 30; //Seconds until mod attempts to spawn new Installation(s)
+		public int maxActiveInstallationsPerPlanet = 30; //No more than this number of active installations on a planet at a time.
+		public double minDistFromOtherGrids = 2500; //Installations will not spawn if any grid is within this distance of proposed spawn location.
+		
+		public int mediumInstallationChanceBase = 10; //If spawning small station, this is chance percent a medium station will appear instead.
+		public int mediumInstallationChanceIncrement = 10; //For each small station spawn, mediumInstallationChanceBase increases by this amount
+		public int mediumInstallationAttempts = 15;
+		public int largeInstallationChanceBase = 5; //If spawning medium station, this is chance percent a large station will appear instead.
+		public int largeInstallationChanceIncrement = 10; //For each medium station spawn, largeInstallationChanceBase increases by this amount
+		public int largeInstallationAttempts = 10;
+		
+		public double playerTravelTrigger = 6000; //Spawn will initiate in player area once player travels this distance along the surface.
+		public double maxPlayerDistFromSurface = 6000; //Spawning will not occur for player if they are this far from planet surface.
+		
+		//Player Distance Spawning Rules
+		public double minSpawnDistFromPlayer = 3000; //Minimum distance from player to spawn at.
+		public double maxSpawnDistFromPlayer = 6000; //Maximum distance from player to spawn at.
+		public double mediumSpawnDistFromPlayerAdd = 2000; //This value is added to the min/max spawndistfromplayer if installation is Medium
+		public double largeSpawnDistFromPlayerAdd = 4000; //This value is added to the min/max spawndistfromplayer if installation is Large
+		
+		//Existing Installation Spawning Rules
+		public double minSpawnDistFromExisting = 3000; //Minimum distance from exisiting spawn location to spawn at.
+		
+		//Spawn Point Terrain Level Rules
+		public int randomLocationAttempts = 150; //Number of times the script will try to find an area to spawn around a player.
+		public int mediumLocationAttemptIncrement = 50;
+		public int largeLocationAttemptIncrement = 100;
+		public double minTerrainLevelVariance = -3.5; //While checking near-by terrain, checked points cannot be lower than this value compared to the initial spawn location.
+		public double maxTerrainLevelVariance = 2.5; //While checking near-by terrain, checked points cannot be higher than this value compared to the initial spawn location.
+		public double terrainCheckIncrement = 10; //Terrain checks in 8 directions are increased by this distance
+		public double smallCheckDistance = 30; //Small station terrain checks are done until this distance is reached in 8 directions from spawn location
+		public double mediumCheckDistance = 80; //Medium station terrain checks are done until this distance is reached in 8 directions from spawn location
+		public double largeCheckDistance = 100; //Large station terrain checks are done until this distance is reached in 8 directions from spawn location
+		
+		//Despawn Rules
+		double noPowerDespawnDist = 12000; //If installation loses power and isn't owned by player, it will despawn when all players are further than this distance.
+		
+		//Installation Regeneration Rules
+		int installationRegenTimerTrigger = 300; //Seconds until installation attempts to regenerate blocks.
+		int installationRegenMinBlocks = 15; //Minimum blocks that script will try to regenerate.
+		int installationRegenMaxBlocks = 30; //Maximum blocks that script will try to regenerate.
+		
+		//Territory Spawning Rules
+		bool ignoreTerritoryRules = false;
+		bool reuseTerritories = false;
+		
+		//Medium/Large Station Tier Timeouts
+		int stationSizeAttemptBuff = 0;
+		int mediumInstallationAttemptTimeout = 0;
+		int largeInstallationAttemptTimeout = 0;
+		
+		//NPC Faction Values
+		List<IMyFaction> npcFactionList = new List<IMyFaction>(); //List of all Default Factions.
+		long npcFounder = 0;
+		
+		//Installation Spawn Group Lists
+		List<MySpawnGroupDefinition> smallInstallationSpawnGroups = new List<MySpawnGroupDefinition>();
+		List<MySpawnGroupDefinition> mediumInstallationSpawnGroups = new List<MySpawnGroupDefinition>();
+		List<MySpawnGroupDefinition> largeInstallationSpawnGroups = new List<MySpawnGroupDefinition>();
+		bool foundValidSpawnGroup = false; //Used by script to determine if there are valid spawn groups where the player is located.
+		
+		//Entity Storage: Planet Territories
+		Guid planetTerritoryStorageKey = new Guid("9A13A7EA-21A6-4E97-8114-6EE4FE52EEB5");
+		string planetTerritoryStorageValue = "";
+		List<Vector3D> planetTerritoriesUsed = new List<Vector3D>(); 
+		
+		//Entity Storage: Planet Next Installation
+		Guid planetNextInstStorageKey = new Guid("7910F6EE-3B2C-4A99-921D-DAEDA6C26B1A");
+		string planetNextInstStorageValue = "";
+		int mediumInstallationChance = 0;
+		int largeInstallationChance = 0;
+		
+		//Entity Storage: Planet Unique SpawnGroups
+		Guid planetUniqueSpawnGroupsKey = new Guid("A61421E8-45A3-4F3B-9EB9-88BD94D906C6");
+		string planetUniqueSpawnGroupsValue = "";
+		List<string> planetUniqueSpawnGroupsUsed = new List<string>(); 
+		
+		//Entity Storage: Installation Grid
+		Guid installationGridStorageKey = new Guid("8F7ECF87-4630-4F62-A490-81C0D4D75E6D");
+		string installationStatus = ""; //Possible Status: Active / NoPower / Captured
+		string installationSizeTier = "";
+		string installationPlanet = "";
+		bool installationRegenAllowed = false;
+		
+		//Player Tracker
+		Dictionary<long, Vector3D> playerLocationTracker = new Dictionary<long, Vector3D>(); //Used to store player location on the planet to trigger spawning when they've traveled far enough.
+		
+		//New Installation Watcher
+		bool searchForInstallations = false; //While true, the mod will scan for new installations after spawning has occured.
+		List<string> tempStationName = new List<string>();
+		List<string> tempStationSize = new List<string>();
+		List<string> tempStationPlanet = new List<string>();
+		List<bool> tempRegenAllowed = new List<bool>();
+		List<Vector3D> tempStationCoords = new List<Vector3D>();
+		List<long> tempStationOwner = new List<long>();
+		List<bool> foundInstallation = new List<bool>();
+		
+		//Grid Regeneration
+		int gridRegenTimerTrigger = 450;
+		int gridRegenProcessTimer = 0;
+		List<IMyCubeGrid> regenQueue = new List<IMyCubeGrid>();
+		bool regenProcessing = false;
+		bool gridRegenDebug = false;
+		
+		//Wreck Direction Template List
+		List<Vector3D> wreckTemplateUpA = new List<Vector3D>();
+		List<Vector3D> wreckTemplateForwardA = new List<Vector3D>();
+		
+		//Wreck Temp Directions
+		Vector3D wreckTempDirUp = new Vector3D(0,0,0);
+		Vector3D wreckTempDirForward = new Vector3D(0,0,0);
+		
+		//Territory Values
+		List<string> territoryNameList = new List<string>();
+		List<string> territoryTagList = new List<string>();
+		List<Vector3D> territoryCoordsList = new List<Vector3D>();
+		List<double> territoryRadiusList = new List<double>();
+		
+		//Spawning Queue
+		List<IMyPlayer> installationSpawningQueue = new List<IMyPlayer>();
+		bool successfulSpawn = false;
+		
+		//Active Installations
+		List<IMyCubeGrid> activeInstallations = new List<IMyCubeGrid>();
+		List<IMyCubeGrid> activeWrecks = new List<IMyCubeGrid>();
+		
+		//Lists for Players / Entities
+		List<IMyPlayer> playerList = new List<IMyPlayer>();
+		HashSet<IMyEntity> entityList = new HashSet<IMyEntity>();
+		HashSet<MyPlanet> planetList = new HashSet<MyPlanet>();
+		List<string> planetNameList = new List<string>();
+		
+		//Counters and Timer Triggers
+		int scriptRun = 0; 
+		int scriptRunTrigger = 60; 
+		int installationMonitorTimer = 0;
+		int installationMonitorTimerTrigger = 10;
+		int spawnTimer = 0;
+		int installationRegenTimer = 0;
+		int gridRegenTimer = 0;
+		
+		//Misc
+		Random rnd = new Random();
+		Vector3D blankPosition = new Vector3D(0,0,0);
+		bool debugMode = false;
+		bool scriptInitialized = false;
+		bool scriptInitFailed = false;		
+		
+		public override void UpdateBeforeSimulation(){
 			
 			if(MyAPIGateway.Multiplayer.IsServer == false){
 				
@@ -278,7 +199,7 @@ namespace HostileExploration {
 				
 			}
 			
-			if(scriptRun < scriptRunTrigger){ // probably keeps script from running all the time. runs every 60 ticks
+			if(scriptRun < scriptRunTrigger){
 				
 				scriptRun++;
 				return;
@@ -297,7 +218,7 @@ namespace HostileExploration {
 
 		}
 		
-		private void Main(){
+		void Main(){
 			
 			spawnTimer++;
 			installationMonitorTimer++;
@@ -309,7 +230,7 @@ namespace HostileExploration {
 				
 			}
 			
-			if(installationWatcher.SearchForInstallations == true){
+			if(searchForInstallations == true){
 				
 				NewInstallationWatcher();
 				
@@ -317,7 +238,7 @@ namespace HostileExploration {
 			
 			
 			
-			if(spawnTimer >= spawningRules.General.SpawnTimerTrigger){
+			if(spawnTimer >= spawnTimerTrigger){
 				
 				spawnTimer = 0;
 				InstallationSpawning();
@@ -327,19 +248,29 @@ namespace HostileExploration {
 						
 		}
 		
-		private void Initialize(){
+		void Initialize(){
 			
 			RefreshLists();
 			
 			//Custom Congfig File Reading and Sanity Checks
-            PlanetaryInstallationsConfig loadconfig = PlanetaryInstallationsConfig.LoadConfigFile();
-
-            spawningRules.General.LoadConfig(loadconfig);
-						
+			PlanetaryInstallationsConfig loadconfig = PlanetaryInstallationsConfig.LoadConfigFile();
+			
+			spawnTimerTrigger = loadconfig.SpawnTimerTrigger;
+			maxActiveInstallationsPerPlanet = loadconfig.MaximumActiveStationsPerPlanet;
+			minDistFromOtherGrids = loadconfig.MinimumSpawnDistanceFromOtherGrids;
+			mediumInstallationChanceBase = loadconfig.MediumSpawnChanceBaseValue;
+			mediumInstallationChanceIncrement = loadconfig.MediumSpawnChanceIncrement;
+			mediumInstallationAttempts = loadconfig.MediumInstallationAttempts;
+			largeInstallationChanceBase = loadconfig.LargeSpawnChanceBaseValue;
+			largeInstallationChanceIncrement = loadconfig.LargeSpawnChanceIncrement;
+			largeInstallationAttempts = loadconfig.LargeInstallationAttempts;
+			playerTravelTrigger = loadconfig.PlayerDistanceSpawnTrigger;
+			maxPlayerDistFromSurface = loadconfig.PlayerMaximumDistanceFromSurface;
+			
 			if(loadconfig.MinimumSpawnDistanceFromPlayers < loadconfig.MaximumSpawnDistanceFromPlayers){
 				
-				spawningRules.PlayerDistance.MinSpawnDistFromPlayer = loadconfig.MinimumSpawnDistanceFromPlayers;
-				spawningRules.PlayerDistance.MaxSpawnDistFromPlayer = loadconfig.MaximumSpawnDistanceFromPlayers;
+				minSpawnDistFromPlayer = loadconfig.MinimumSpawnDistanceFromPlayers;
+				maxSpawnDistFromPlayer = loadconfig.MaximumSpawnDistanceFromPlayers;
 				
 			}else{
 				
@@ -347,28 +278,28 @@ namespace HostileExploration {
 				
 			}
 			
-			spawningRules.PlayerDistance.MediumSpawnDistFromPlayerAdd = loadconfig.MediumSpawnDistanceIncrement;
-			spawningRules.PlayerDistance.LargeSpawnDistFromPlayerAdd = loadconfig.LargeSpawnDistanceIncrement;
-			spawningRules.ExistingInstallation.MinSpawnDistFromExisting = loadconfig.MinimumSpawnDistanceFromExistingSpawn;
-            spawningRules.SpawnPointTerrainLevel.RandomLocationAttempts = loadconfig.RandomTerrainSurfaceChecks;
-            spawningRules.SpawnPointTerrainLevel.MediumLocationAttemptIncrement = loadconfig.MediumLocationAttemptIncrement;
-            spawningRules.SpawnPointTerrainLevel.LargeLocationAttemptIncrement = loadconfig.LargeLocationAttemptIncrement;
+			mediumSpawnDistFromPlayerAdd = loadconfig.MediumSpawnDistanceIncrement;
+			largeSpawnDistFromPlayerAdd = loadconfig.LargeSpawnDistanceIncrement;
+			minSpawnDistFromExisting = loadconfig.MinimumSpawnDistanceFromExistingSpawn;
+			randomLocationAttempts = loadconfig.RandomTerrainSurfaceChecks;
+			mediumLocationAttemptIncrement = loadconfig.MediumLocationAttemptIncrement;
+			largeLocationAttemptIncrement = loadconfig.LargeLocationAttemptIncrement;
 			
 			if(loadconfig.MinimumTerrainVariance < loadconfig.MaximumTerrainVariance){
-
-                spawningRules.SpawnPointTerrainLevel.MinTerrainLevelVariance = loadconfig.MinimumTerrainVariance;
-                spawningRules.SpawnPointTerrainLevel.MaxTerrainLevelVariance = loadconfig.MaximumTerrainVariance;
+				
+				minTerrainLevelVariance = loadconfig.MinimumTerrainVariance;
+				maxTerrainLevelVariance = loadconfig.MaximumTerrainVariance;
 				
 			}else{
 				
 				LogEntry("Config Warning: MinimumTerrainVariance value should be less than MaximumTerrainVariance value. Mod default values will be used instead.");
 				
 			}
-
-            spawningRules.SpawnPointTerrainLevel.TerrainCheckIncrement = loadconfig.TerrainCheckIncrementDistance;
-            spawningRules.SpawnPointTerrainLevel.SmallCheckDistance = loadconfig.SmallTerrainCheckDistance;
-            spawningRules.SpawnPointTerrainLevel.MediumCheckDistance = loadconfig.MediumTerrainCheckDistance;
-            spawningRules.SpawnPointTerrainLevel.LargeCheckDistance = loadconfig.LargeTerrainCheckDistane;
+			
+			terrainCheckIncrement = loadconfig.TerrainCheckIncrementDistance;
+			smallCheckDistance = loadconfig.SmallTerrainCheckDistance;
+			mediumCheckDistance = loadconfig.MediumTerrainCheckDistance;
+			largeCheckDistance = loadconfig.LargeTerrainCheckDistane;
 			noPowerDespawnDist = loadconfig.UnpoweredDespawnDistance;
 			installationRegenTimerTrigger = loadconfig.RegenerationTimerTrigger;
 			
@@ -383,8 +314,8 @@ namespace HostileExploration {
 				
 			}
 			
-			spawningRules.Territory.IgnoreTerritoryRules = loadconfig.IgnoreTerritoryRules;
-			spawningRules.Territory.ReuseTerritories = loadconfig.ReuseTerritories;
+			ignoreTerritoryRules = loadconfig.IgnoreTerritoryRules;
+			reuseTerritories = loadconfig.ReuseTerritories;
 			
 			if(planetList.Count == 0){
 				
@@ -395,6 +326,7 @@ namespace HostileExploration {
 			}
 			
 			//Setup Wreck Direction Profiles
+			
 			wreckTemplateUpA.Add(new Vector3D(0.471277594566345,0.869170486927032,-0.149800226092339));
 			wreckTemplateUpA.Add(new Vector3D(-0.333788454532623,0.87928694486618,0.339764207601547));
 			wreckTemplateUpA.Add(new Vector3D(0.578473806381226,0.815646708011627,-0.00940560176968575));
@@ -413,17 +345,35 @@ namespace HostileExploration {
 			foreach (var spawnGroup in allSpawnGroups){
 				
 				int frequency = (Int32)Math.Ceiling(spawnGroup.Frequency); //Get Spawn Group Frequency and Round Up.
-                if (spawnGroup.IsEncounter == true && spawnGroup.IsPirate == false)
-                {
-                    eligibleSpawnGroups++;
-                    for (int i = 0; i < frequency; i++)
-                    {
-                            explorationSpawnGroups.Add(spawnGroup);
-                     }
-
-                }
-                
-                if (spawnGroup.Prefabs[0].SubtypeId == "TerritoryPlaceholder"){
+				
+				if (spawnGroup.IsEncounter == false && spawnGroup.IsPirate == true && spawnGroup.Id.SubtypeName.Contains("(Inst-")){
+					
+					eligibleSpawnGroups++;
+					for(int i = 0; i < frequency; i++){
+						
+						if(spawnGroup.Id.SubtypeName.Contains("(Inst-1")){
+							
+							smallInstallationSpawnGroups.Add(spawnGroup);
+							
+						}
+						
+						if(spawnGroup.Id.SubtypeName.Contains("(Inst-2")){
+							
+							mediumInstallationSpawnGroups.Add(spawnGroup);
+							
+						}
+						
+						if(spawnGroup.Id.SubtypeName.Contains("(Inst-3")){
+							
+							largeInstallationSpawnGroups.Add(spawnGroup);
+							
+						}
+						
+					}
+					
+				}
+				
+				if(spawnGroup.Prefabs[0].SubtypeId == "TerritoryPlaceholder"){
 					
 					territoryNameList.Add(spawnGroup.Id.SubtypeName);
 					territoryTagList.Add(spawnGroup.Prefabs[0].BeaconText);
@@ -518,7 +468,7 @@ namespace HostileExploration {
 				
 			}
 			
-			LogEntry("One or more player has travelled " + spawningRules.General.PlayerTravelTrigger.ToString() + "m or more along a planet surface. Attempting to Spawn Installation(s).");
+			LogEntry("One or more player has travelled " + playerTravelTrigger.ToString() + "m or more along a planet surface. Attempting to Spawn Installation(s).");
 			RefreshLists();
 			
 			foreach(var player in installationSpawningQueue){
@@ -528,7 +478,7 @@ namespace HostileExploration {
 				IMyEntity planetEntity = planet as IMyEntity;
 				
 				//Check if Planet is at installation limit.
-				if(PlanetActiveInstallationCount(planet) >= spawningRules.General.MaxActiveInstallationsPerPlanet){
+				if(PlanetActiveInstallationCount(planet) >= maxActiveInstallationsPerPlanet){
 					
 					LogEntry("Active Installation Limit Reached Near Player " + player.DisplayName + " For Planet " + planet.StorageName);
 					continue;
@@ -574,14 +524,14 @@ namespace HostileExploration {
 				string installationSize = "Small";
 				
 				planetNextInstStorageValue = "";
-				mediumInstallationChance = spawningRules.General.MediumInstallationChanceBase;
-				largeInstallationChance = spawningRules.General.LargeInstallationChanceBase;
+				mediumInstallationChance = mediumInstallationChanceBase;
+				largeInstallationChance = largeInstallationChanceBase;
 				
 				if(planetEntity.Storage == null){
 					
 					planetEntity.Storage = new MyModStorageComponent();
-					mediumInstallationChance = spawningRules.General.MediumInstallationChanceBase;
-					largeInstallationChance = spawningRules.General.LargeInstallationChanceBase;
+					mediumInstallationChance = mediumInstallationChanceBase;
+					largeInstallationChance = largeInstallationChanceBase;
 					
 				}else{
 					
@@ -594,8 +544,8 @@ namespace HostileExploration {
 						if(storageSplit.Length < 2){
 							
 							//Storage wasn't stored or retrieved properly - resetting targets.
-							mediumInstallationChance = spawningRules.General.MediumInstallationChanceBase;
-							largeInstallationChance = spawningRules.General.LargeInstallationChanceBase;
+							mediumInstallationChance = mediumInstallationChanceBase;
+							largeInstallationChance = largeInstallationChanceBase;
 							
 						}else{
 							
@@ -613,21 +563,21 @@ namespace HostileExploration {
 							if(randomChance < mediumInstallationChance || foundValidSpawnGroup == false){
 								
 								installationSize = "Medium";
-								stationSizeAttemptBuff = spawningRules.SpawnPointTerrainLevel.MediumLocationAttemptIncrement;
+								stationSizeAttemptBuff = mediumLocationAttemptIncrement;
 								sampleSpawnGroup = GetRandomInstSpawnGroup(planet, "Medium", true, player.GetPosition());
 								randomChance = rnd.Next(0, 100);
 								
 								if(randomChance < largeInstallationChance || foundValidSpawnGroup == false){
 									
 									installationSize = "Large";
-									stationSizeAttemptBuff = spawningRules.SpawnPointTerrainLevel.LargeLocationAttemptIncrement;
+									stationSizeAttemptBuff = largeLocationAttemptIncrement;
 									sampleSpawnGroup = GetRandomInstSpawnGroup(planet, "Large", true, player.GetPosition());
 									
 									if(foundValidSpawnGroup == false){
 										
 										//Values Reset and Spawning Fails
-										mediumInstallationChance = spawningRules.General.MediumInstallationChanceBase;
-										largeInstallationChance = spawningRules.General.LargeInstallationChanceBase;
+										mediumInstallationChance = mediumInstallationChanceBase;
+										largeInstallationChance = largeInstallationChanceBase;
 										
 									}
 									
@@ -696,24 +646,25 @@ namespace HostileExploration {
 				}
 				
 				//Rebuild Next Installation Target Storage
+				
 				if(installationSize == "Small" && successfulSpawn == true){
 					
-					mediumInstallationChance += spawningRules.General.MediumInstallationChanceIncrement;
+					mediumInstallationChance += mediumInstallationChanceIncrement;
 					
 				}
 				
 				if(installationSize == "Medium" && successfulSpawn == true){
 					
 					mediumInstallationAttemptTimeout = 0;
-					mediumInstallationChance = spawningRules.General.MediumInstallationChanceBase;
-					largeInstallationChance += spawningRules.General.LargeInstallationChanceIncrement;
+					mediumInstallationChance = mediumInstallationChanceBase;
+					largeInstallationChance += largeInstallationChanceIncrement;
 					
 				}
 				
 				if(installationSize == "Large" && successfulSpawn == true){
 					
 					largeInstallationAttemptTimeout = 0;
-					largeInstallationChance = spawningRules.General.LargeInstallationChanceBase;
+					largeInstallationChance = largeInstallationChanceBase;
 					
 				}
 				
@@ -751,11 +702,9 @@ namespace HostileExploration {
 				Vector3D playerCoords = player.GetPosition();
 				bool playerInGravity = planetEntity.Components.Get<MyGravityProviderComponent>().IsPositionInRange(player.GetPosition());
 				Vector3D playerSurfacePoint = planet.GetClosestSurfacePointGlobal(ref playerCoords);
-
-                //Checks to if player is in Gravity.
-                if (playerInGravity == true){
-
-                	
+				
+				if(playerInGravity == false || MeasureDistance(playerSurfacePoint, player.GetPosition()) > maxPlayerDistFromSurface){
+					
 					playerLocationTracker.Remove(player.PlayerID);
 					continue;
 					
@@ -766,7 +715,7 @@ namespace HostileExploration {
 					
 					Vector3D playerPreviousLocation = playerLocationTracker[player.PlayerID];
 					
-					if(MeasureDistance(playerSurfacePoint, playerPreviousLocation) > spawningRules.General.PlayerTravelTrigger){
+					if(MeasureDistance(playerSurfacePoint, playerPreviousLocation) > playerTravelTrigger){
 						
 						playerLocationTracker[player.PlayerID] = playerSurfacePoint;
 						installationSpawningQueue.Add(player);
@@ -783,15 +732,15 @@ namespace HostileExploration {
 			}
 		
 		}
-
-        void TrySpawningInstallation(Vector3D playerPosition, MyPlanet planet, string installationSize){
+		
+		void TrySpawningInstallation(Vector3D playerPosition, MyPlanet planet, string installationSize){
 			
 			successfulSpawn = false;
 			IMyEntity planetEntity = planet as IMyEntity;
 			Vector3D spawningCoords = new Vector3D(0,0,0);
 			Vector3D upwardDirection = Vector3D.Normalize(playerPosition - planetEntity.GetPosition());
 			double spawnDistanceModifier = 0;
-			double terrainCheckModifier = spawningRules.SpawnPointTerrainLevel.SmallCheckDistance;
+			double terrainCheckModifier = smallCheckDistance;
 			bool gotSpawningLocation = false;
 			
 			//Try Getting a Valid Spawn Group
@@ -806,42 +755,40 @@ namespace HostileExploration {
 			
 			if(installationSize == "Small"){
 				
-				terrainCheckModifier = spawningRules.SpawnPointTerrainLevel.SmallCheckDistance;
+				terrainCheckModifier = smallCheckDistance;
 				
 			}
 					
 			if(installationSize == "Medium"){
 				
-				spawnDistanceModifier = spawningRules.PlayerDistance.MediumSpawnDistFromPlayerAdd;
-				terrainCheckModifier = spawningRules.SpawnPointTerrainLevel.MediumCheckDistance;
+				spawnDistanceModifier = mediumSpawnDistFromPlayerAdd;
+				terrainCheckModifier = mediumCheckDistance;
 				
 			}
 			
 			if(installationSize == "Large"){
 				
-				spawnDistanceModifier = spawningRules.PlayerDistance.LargeSpawnDistFromPlayerAdd;
-				terrainCheckModifier = spawningRules.SpawnPointTerrainLevel.LargeCheckDistance;
+				spawnDistanceModifier = largeSpawnDistFromPlayerAdd;
+				terrainCheckModifier = largeCheckDistance;
 				
 			}
 			
 			//Try to get valid spawning location near player
-			for(int i = 0; i < spawningRules.SpawnPointTerrainLevel.RandomLocationAttempts + stationSizeAttemptBuff; i++){
+			for(int i = 0; i < randomLocationAttempts + stationSizeAttemptBuff; i++){
 				
 				//Get Random Spawning Area
-				double distanceToSpawn = RandomNumberBetween(spawningRules.PlayerDistance.MinSpawnDistFromPlayer, spawningRules.PlayerDistance.MaxSpawnDistFromPlayer) + spawnDistanceModifier; //Calculates how far from the player to attempt spawning
+				double distanceToSpawn = RandomNumberBetween(minSpawnDistFromPlayer, maxSpawnDistFromPlayer) + spawnDistanceModifier; //Calculates how far from the player to attempt spawning
 				Vector3D randomDirection = MyUtils.GetRandomPerpendicularVector(ref upwardDirection); //Picks a random 'compass direction' from the player
 				Vector3D roughSpawningArea = randomDirection * distanceToSpawn + playerPosition; //Draws a line from the player using the random distance and direction determined above.
-                //Vector3D surfacePoint = planet.GetClosestSurfacePointGlobal(ref roughSpawningArea); //Get the position of the surface either above or below where the end of the line was drawn.
-                Vector3D surfacePoint = randomDirection * distanceToSpawn + playerPosition; //Get the position of the surface either above or below where the end of the line was drawn.
-
-
-                //Run Checks On Location - CHECK IF NEAR PLANET
-                if (CheckProposedSpawnLocation(surfacePoint) == false){
+				Vector3D surfacePoint = planet.GetClosestSurfacePointGlobal(ref roughSpawningArea); //Get the position of the surface either above or below where the end of the line was drawn.
+				
+				//Run Checks On Location
+				if(CheckProposedSpawnLocation(surfacePoint) == false){
 					
 					continue;
 					
 				}
-                
+				
 				//Check Terrain Level Of Spawning Area
 				bool terrainIsLevel = true;
 				double distanceToCore = MeasureDistance(surfacePoint, planetEntity.GetPosition());
@@ -849,8 +796,7 @@ namespace HostileExploration {
 				Vector3D spawningRandomDirection = MyUtils.GetRandomPerpendicularVector(ref spawningUpDirection);
 				MatrixD levelCheckMatrix = MatrixD.CreateWorld(surfacePoint, spawningRandomDirection, spawningUpDirection);
 				
-				for(double j = 10; j < terrainCheckModifier; j += spawningRules.SpawnPointTerrainLevel.TerrainCheckIncrement)
-                {
+				for(double j = 10; j < terrainCheckModifier; j += terrainCheckIncrement){
 					
 					if(terrainIsLevel == false){
 						
@@ -875,15 +821,14 @@ namespace HostileExploration {
 						Vector3D levelCheckSurface = planet.GetClosestSurfacePointGlobal(ref levelCheck);
 						double levelCheckCoreDist = MeasureDistance(levelCheckSurface, planetEntity.GetPosition());
 						double levelDifference = levelCheckCoreDist - distanceToCore;
-
-                        /*
-                        if (levelDifference < minTerrainLevelVariance || levelDifference > maxTerrainLevelVariance){
+						
+						if(levelDifference < minTerrainLevelVariance || levelDifference > maxTerrainLevelVariance){
 							
 							terrainIsLevel = false;
 							break;
 							
 						}
-						*/
+						
 					}
 					
 				}
@@ -903,15 +848,15 @@ namespace HostileExploration {
 			
 			if(gotSpawningLocation == false){
 				
-				LogEntry("Could Not Find Terrain For Station Spawning After " + spawningRules.SpawnPointTerrainLevel.RandomLocationAttempts.ToString() + " Attempts");
+				LogEntry("Could Not Find Terrain For Station Spawning After " + randomLocationAttempts.ToString() + " Attempts");
 				
 				if(installationSize == "Medium"){
 					
 					mediumInstallationAttemptTimeout++;
 					
-					if(mediumInstallationAttemptTimeout >= spawningRules.General.MediumInstallationAttempts){
+					if(mediumInstallationAttemptTimeout >= mediumInstallationAttempts){
 						
-						mediumInstallationChance = spawningRules.General.MediumInstallationChanceBase;
+						mediumInstallationChance = mediumInstallationChanceBase;
 						
 					}
 					
@@ -921,9 +866,9 @@ namespace HostileExploration {
 					
 					largeInstallationAttemptTimeout++;
 					
-					if(largeInstallationAttemptTimeout >= spawningRules.General.LargeInstallationAttempts){
+					if(largeInstallationAttemptTimeout >= largeInstallationAttempts){
 						
-						largeInstallationChance = spawningRules.General.LargeInstallationChanceBase;
+						largeInstallationChance = largeInstallationChanceBase;
 						
 					}
 					
@@ -943,14 +888,12 @@ namespace HostileExploration {
 			
 			int prefabIndex = 0;
 			foreach(var prefab in installationSpawnGroup.Prefabs){
-
-                double distanceToSpawn = RandomNumberBetween(spawningRules.PlayerDistance.MinSpawnDistFromPlayer, spawningRules.PlayerDistance.MaxSpawnDistFromPlayer) + spawnDistanceModifier; //Calculates how far from the player to attempt spawning
-                Vector3D randomDirection = MyUtils.GetRandomPerpendicularVector(ref upwardDirection); //Picks a random 'compass direction' from the player
-                Vector3D prefabPosition = (Vector3D)prefab.Position;
+				
+				Vector3D prefabPosition = (Vector3D)prefab.Position;
 				Vector3D prefabUp = coreDirection;
 				Vector3D prefabForward = randomForward;
 				Vector3D prefabRoughSurface = Vector3D.Transform(new Vector3D(prefabPosition.X, 0, prefabPosition.Z), spawnGroupMatrix);
-				Vector3D prefabSurface = randomDirection * distanceToSpawn + playerPosition; ;
+				Vector3D prefabSurface = planet.GetClosestSurfacePointGlobal(ref prefabRoughSurface);
 				MatrixD prefabMatrix = MatrixD.CreateWorld(prefabSurface, prefabForward, prefabUp);
 				//Some Shit Is Wrong With Height Offset - Figure It Out
 				Vector3D prefabHeightOffset = new Vector3D(0,0,0);
@@ -982,7 +925,7 @@ namespace HostileExploration {
 				
 				//Spawn The Prefab!
 				LogEntry("Spawned " + installationSize + " Station: " + prefab.SubtypeId);
-                MyAPIGateway.PrefabManager.SpawnPrefab(tempList, prefab.SubtypeId, prefabSpawningPosition, prefabForward, prefabUp, new Vector3(0f), spawningOptions: SpawningOptions.SetNeutralOwner | SpawningOptions.RotateFirstCockpitTowardsDirection | SpawningOptions.SpawnRandomCargo, beaconName: prefab.BeaconText, ownerId: owner, updateSync: false);
+				MyAPIGateway.PrefabManager.SpawnPrefab(tempList, prefab.SubtypeId, prefabSpawningPosition, prefabForward, prefabUp, new Vector3(0f), spawningOptions: SpawningOptions.SetNeutralOwner | SpawningOptions.RotateFirstCockpitTowardsDirection | SpawningOptions.SpawnRandomCargo, beaconName: prefab.BeaconText, ownerId: owner, updateSync: false);
 				bool allowRegen = false;
 				
 				if(installationSpawnGroup.Id.SubtypeName.Contains("(Regen)")){
@@ -992,13 +935,13 @@ namespace HostileExploration {
 				}
 
 				//Add Spawn Details To Temp Lists
-				installationWatcher.TempStationName.Add(prefab.SubtypeId);
-                installationWatcher.TempStationSize.Add(installationSize);
-                installationWatcher.TempStationPlanet.Add(planet.StorageName);
-                installationWatcher.TempRegenAllowed.Add(allowRegen);
-                installationWatcher.TempStationCoords.Add(prefabSpawningPosition);
-                installationWatcher.TempStationOwner.Add(owner);
-                installationWatcher.FoundInstallation.Add(false);
+				tempStationName.Add(prefab.SubtypeId);
+				tempStationSize.Add(installationSize);
+				tempStationPlanet.Add(planet.StorageName);
+				tempRegenAllowed.Add(allowRegen);
+				tempStationCoords.Add(prefabSpawningPosition);
+				tempStationOwner.Add(owner);
+				foundInstallation.Add(false);
 				prefabIndex++;
 				
 			}
@@ -1011,7 +954,7 @@ namespace HostileExploration {
 			
 			successfulSpawn = true;
 			planetTerritoriesUsed.Add(spawningCoords);
-			installationWatcher.SearchForInstallations = true;
+			searchForInstallations = true;
 			
 		}
 		
@@ -1063,7 +1006,7 @@ namespace HostileExploration {
 				
 				foreach(var territory in planetTerritoriesUsed){
 					
-					if(MeasureDistance(spawnLocation, territory) < spawningRules.ExistingInstallation.MinSpawnDistFromExisting && spawningRules.Territory.ReuseTerritories == false){
+					if(MeasureDistance(spawnLocation, territory) < minSpawnDistFromExisting && reuseTerritories == false){
 						
 						return false;
 						
@@ -1084,7 +1027,7 @@ namespace HostileExploration {
 					
 				}
 				
-				if(MeasureDistance(cubeGrid.GetPosition(), spawnLocation) < spawningRules.General.MinDistFromOtherGrids){
+				if(MeasureDistance(cubeGrid.GetPosition(), spawnLocation) < minDistFromOtherGrids){
 					
 					return false;
 					
@@ -1101,7 +1044,7 @@ namespace HostileExploration {
 					
 				}
 				
-				if(MeasureDistance(player.GetPosition(), spawnLocation) < spawningRules.General.MinDistFromOtherGrids){
+				if(MeasureDistance(player.GetPosition(), spawnLocation) < minDistFromOtherGrids){
 					
 					return false;
 					
@@ -1122,7 +1065,19 @@ namespace HostileExploration {
 			
 			if(installationSize == "Small"){
 				
-				sizedSpawnGroups = explorationSpawnGroups;
+				sizedSpawnGroups = smallInstallationSpawnGroups;
+				
+			}
+			
+			if(installationSize == "Medium"){
+				
+				sizedSpawnGroups = mediumInstallationSpawnGroups;
+				
+			}
+			
+			if(installationSize == "Large"){
+				
+				sizedSpawnGroups = largeInstallationSpawnGroups;
 				
 			}
 			
@@ -1195,6 +1150,7 @@ namespace HostileExploration {
 				}
 				
 				//Check for Unique SpawnGroup
+				
 				if(spawnGroup.Id.SubtypeName.Contains("(Unique)")){
 					
 					foreach(var uniqueGroup in planetUniqueSpawnGroupsUsed){
@@ -1282,17 +1238,18 @@ namespace HostileExploration {
 			}
 			
 			//Now We Get A Random SpawnGroup From The Filtered List.
+			
 			if(filteredSpawnGroups.Count == 0){
 				
 				if(installationSize == "Medium" && checkOnly == false){
 					
-					mediumInstallationChance = spawningRules.General.MediumInstallationChanceBase;
+					mediumInstallationChance = mediumInstallationChanceBase;
 					
 				}
 				
 				if(installationSize == "Large" && checkOnly == false){
 					
-					largeInstallationChance = spawningRules.General.LargeInstallationChanceBase;
+					largeInstallationChance = largeInstallationChanceBase;
 					
 				}
 				
@@ -1307,9 +1264,9 @@ namespace HostileExploration {
 
 		}
 		
-		private void NewInstallationWatcher(){
+		void NewInstallationWatcher(){
 			
-			if(installationWatcher.SearchForInstallations == false){
+			if(searchForInstallations == false){
 				
 				return;
 				
@@ -1318,9 +1275,9 @@ namespace HostileExploration {
 			RefreshLists();
 			bool foundAllInstallations = true;
 			
-			for(int i = 0; i < installationWatcher.FoundInstallation.Count; i++){
+			for(int i = 0; i < foundInstallation.Count; i++){
 				
-				if(installationWatcher.FoundInstallation[i] == false){
+				if(foundInstallation[i] == false){
 					
 					foundAllInstallations = false;
 					
@@ -1334,12 +1291,12 @@ namespace HostileExploration {
 							
 						}
 												
-						if(MeasureDistance(installationWatcher.TempStationCoords[i], cubeGrid.GetPosition()) < 1000 && cubeGrid.CustomName == installationWatcher.TempStationName[i]){
+						if(MeasureDistance(tempStationCoords[i], cubeGrid.GetPosition()) < 1000 && cubeGrid.CustomName == tempStationName[i]){
 							
 							string gridStatus = "Active";
 						
 							//Check For Nobody Ownership
-							if(installationWatcher.TempStationOwner[i] == 0){
+							if(tempStationOwner[i] == 0){
 								
 								ForceCustomFactionOwnership(cubeGrid, 0);
 								gridStatus = "Wreck";
@@ -1355,9 +1312,9 @@ namespace HostileExploration {
 							
 							string gridStorageCombined = "";
 							gridStorageCombined += gridStatus + "\n";
-							gridStorageCombined += installationWatcher.TempStationSize[i] + "\n";
-							gridStorageCombined += installationWatcher.TempStationPlanet[i] + "\n";
-							gridStorageCombined += installationWatcher.TempRegenAllowed[i].ToString();
+							gridStorageCombined += tempStationSize[i] + "\n";
+							gridStorageCombined += tempStationPlanet[i] + "\n";
+							gridStorageCombined += tempRegenAllowed[i].ToString();
 							
 							entity.Storage[installationGridStorageKey] = gridStorageCombined;
 							
@@ -1365,9 +1322,9 @@ namespace HostileExploration {
 							activeInstallations.Add(cubeGrid);
 							
 							RemoveGridAuthorship(cubeGrid);
-
-                            //Mark As Found for Watcher
-                            installationWatcher.FoundInstallation[i] = true;
+														
+							//Mark As Found for Watcher
+							foundInstallation[i] = true;
 							
 						}
 						
@@ -1378,8 +1335,15 @@ namespace HostileExploration {
 			}
 			
 			if(foundAllInstallations == true){
-
-                installationWatcher.Reset();
+				
+				tempStationName.Clear();
+				tempStationSize.Clear();
+				tempStationPlanet.Clear();
+				tempRegenAllowed.Clear();
+				tempStationCoords.Clear();
+				tempStationOwner.Clear();
+				foundInstallation.Clear();
+				searchForInstallations = false;
 				
 			}
 		
@@ -1901,7 +1865,7 @@ namespace HostileExploration {
 			
 			bool result = true;
 			
-			if(territoryTagList.Count == 0 || spawningRules.Territory.IgnoreTerritoryRules == true){
+			if(territoryTagList.Count == 0 || ignoreTerritoryRules == true){
 				
 				return true;
 				
@@ -1985,5 +1949,3 @@ namespace HostileExploration {
 	}
 	
 }
-
-//bad/good idea -- appocalypse mode where everything spawns all the time even in atmosphere
